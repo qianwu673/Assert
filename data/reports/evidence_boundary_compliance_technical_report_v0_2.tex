@@ -1,0 +1,487 @@
+\documentclass[11pt]{article}
+\usepackage[round]{natbib}
+
+\title{Beyond Correctness: A Controlled Evaluation of Evidence-Boundary Compliance in Large Language Models}
+\author{Author names omitted for draft}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Document-grounded large language model (LLM) systems are usually evaluated by whether their answers are factually correct. For many deployed uses, this misses an important failure mode: a model may answer correctly from memory, pretraining, or inference while still violating the evidence boundary authorized by the user or system. This paper operationalizes \emph{evidence-boundary compliance} as an evaluation target for document-grounded question answering. We introduce a controlled diagnostic protocol that crosses evidence availability, boundary-salience instructions, and question type, and we apply it in an adjudicated multi-model pilot across OpenAI, Claude, and Gemini models. The primary temperature-controlled comparison contains 810 records from nine models over five papers, ten question IDs, three evidence conditions, and three salience conditions. After blind second-pass review and adjudication, unsupported-condition violations occurred in 94 of 405 unsupported records (23.2\%). Boundary salience substantially reduced unsupported answering, from 67/135 violations under low salience (49.6\%) to 22/135 under medium salience (16.3\%) and 5/135 under high salience (3.7\%). The results show that correctness and evidence-boundary compliance are separable, and that explicit prompting improves but does not fully solve evidence-boundary failures. The study should be read as a controlled diagnostic pilot, not a broad benchmark.
+\end{abstract}
+
+\section{Introduction}
+
+Document-grounded LLM systems are increasingly embedded in workflows where users provide a document, record, retrieved passage, or bounded evidence packet and expect the model to answer from that material. Evaluation often asks whether the model's answer is correct. That is necessary, but not sufficient. In a document-grounded setting, a model can give a true answer for the wrong evidential reason: it may answer from memory, from learned associations, from a plausible inference, or from information outside the provided material. The answer may be correct in the world while still violating the user's authorized evidence boundary.
+
+This paper studies that failure mode as an engineering problem. A document-grounded system should not merely be able to say true things. It should also know when the supplied evidence does and does not license an answer. We use \emph{assertability} in this operational sense: a claim is assertable in the task only if it is supported by the authorized evidence packet. The target behavior, \emph{evidence-boundary compliance}, is whether the model treats the provided material as the evidence frame within which answers must be justified.
+
+We present a controlled diagnostic pilot rather than a broad benchmark. The item set is intentionally small: five papers and ten question IDs. The goal is not to estimate general performance across all document-grounded QA. The goal is to construct a clean test of a specific failure mode: whether models answer beyond the evidence when the answer is absent, partially absent, or only weakly cued by metadata.
+
+The paper makes four contributions.
+
+\begin{enumerate}
+\item We give an operational definition of evidence-boundary compliance for document-grounded QA, separating answer correctness from evidence-relative assertability.
+\item We introduce a controlled evaluation protocol crossing evidence condition, boundary-salience condition, and question type.
+\item We report an adjudicated multi-model pilot across OpenAI, Claude, and Gemini models in a closed-context, tool-off, grounding-off setting.
+\item We provide an annotation scheme and failure taxonomy separating unsupported answers, false unsupported answers, title-based overreach, unsupported expansion, and disclosed expansion.
+\end{enumerate}
+
+The adjudicated results show that evidence-boundary compliance is prompt-sensitive and model-sensitive. Unsupported-condition violations occurred in 94 of 405 unsupported records (23.2\%) in the primary comparison. Increasing boundary salience substantially reduced unsupported assertions, but did not eliminate them. This suggests that evidence-boundary regulation should be treated as its own evaluation and training target, not assumed to follow automatically from factuality, general capability, or instruction following.
+
+\section{Related Work}
+
+\paragraph{Hallucination and factuality evaluation.}
+Prior work on hallucination and factuality evaluation studies whether model outputs are true, faithful, or factually grounded \citep{TODO-hallucination-survey,TODO-factuality-evaluation}. This paper differs by evaluating whether a response is licensed by the evidence made available in the task. A factually correct answer can still be non-compliant if the provided material does not support it. Evidence-boundary compliance is therefore not reducible to factuality.
+
+\paragraph{RAG, grounded QA, and citation faithfulness.}
+Work on retrieval-augmented generation, grounded QA, and citation faithfulness asks whether generated answers are supported by retrieved or cited sources \citep{TODO-rag-evaluation,TODO-grounded-qa,TODO-citation-faithfulness}. Our setting is related, but the experimental manipulation is different: we deliberately vary what evidence is supplied and test whether models respect that evidence boundary when the answer is fully present, partially absent, or absent. The focus is not retrieval quality or citation format, but compliance with a user-defined evidence frame.
+
+\paragraph{Abstention, selective prediction, and uncertainty.}
+Selective prediction and abstention research studies when systems should withhold answers under uncertainty or insufficient information \citep{TODO-selective-prediction,TODO-abstention-llms}. Evidence-boundary compliance overlaps with abstention, but is not identical to it. A model may be confident and factually correct while still lacking authorized evidence. Conversely, a compliant model may give a selective partial answer when part of the question is supported and part is not.
+
+\paragraph{Instruction following and evidence use.}
+Instruction-following evaluations test whether models obey user or system instructions \citep{TODO-instruction-following}. This paper studies one specific instruction-following problem with high practical stakes: obeying a boundary on admissible evidence. The salience manipulation tests whether making that boundary more explicit improves behavior. The results show that salience helps substantially, but residual high-salience failures remain.
+
+\section{Problem Formulation}
+
+Let a document-grounded QA task provide a question $q$ and an authorized evidence packet $E$. A model produces a response $r$. Standard factual evaluation asks whether the answer content in $r$ is correct relative to the world, an external gold answer, or an evaluator's background knowledge. Evidence-boundary evaluation instead asks whether the answer content in $r$ is supported by $E$.
+
+This distinction creates several cases. A response may be both factually correct and supported. It may be factually incorrect and unsupported. It may also be factually plausible or correct but unsupported by the authorized evidence. Finally, it may be compliant because it refuses, qualifies, or gives only a partial answer even if a fuller answer exists outside the supplied material.
+
+We define an unsupported-condition violation as a case in which the expected support label is \texttt{not\_supported} and the model nevertheless gives a direct or expanded answer without adequately stating that the provided evidence is insufficient. The definition is evidence-relative. The same substantive claim can be compliant in a \texttt{full} condition and non-compliant in a \texttt{none} condition.
+
+The evaluation focuses on closed-context behavior. The model is not given tools, browsing, retrieval, file search, code execution, Google Search grounding, URL context, or additional system instructions beyond the rendered experiment prompt. The central question is not whether the model can find the answer somewhere, but whether it respects the evidence it has been authorized to use.
+
+\section{Evaluation Design}
+
+\subsection{Items and Question Types}
+
+The Stage 1 pilot uses five papers and ten question IDs. Each paper contributes two questions. The first question type, \texttt{abstract\_answerable}, can be answered from title and abstract material. The second, \texttt{target\_section\_required}, requires material outside the abstract. Questions were written without evidence-boundary cues such as ``according to the abstract'' or ``according to Section 3.3,'' so that boundary control comes from the wrapper prompt rather than the question text. Appendix~\ref{app:items} summarizes the item set.
+
+\subsection{Evidence Conditions}
+
+Each item is crossed with three evidence conditions.
+
+\begin{itemize}
+\item \texttt{full}: the provided material contains enough evidence to answer the target question.
+\item \texttt{partial}: the provided material contains title and abstract, but omits target sections required for some questions.
+\item \texttt{none}: the provided material contains only bibliographic metadata and does not contain enough evidence for content-specific questions.
+\end{itemize}
+
+For \texttt{abstract\_answerable} questions, \texttt{full} and \texttt{partial} are supported, while \texttt{none} is unsupported. For \texttt{target\_section\_required} questions, only \texttt{full} is supported, while \texttt{partial} and \texttt{none} are unsupported. In the primary comparison, this yields 405 supported records and 405 unsupported records.
+
+\subsection{Boundary-Salience Conditions}
+
+Each item is crossed with three boundary-salience conditions. The low-salience wrapper gives a subtle instruction to use the material. The medium-salience wrapper explicitly instructs the model to base its answer on the material and say when the material is insufficient. The high-salience wrapper states that the provided text is the only admissible evidence and prohibits memory, retrieval, browsing, prior knowledge, and external sources. The prompt templates are shown in Appendix~\ref{app:prompts}.
+
+This manipulation tests whether explicit boundary language changes model behavior. It does not enforce the boundary mechanically. A model can still answer beyond the supplied evidence, so the design measures prompt-sensitive compliance rather than tool-mediated access control.
+
+\subsection{Models and Records}
+
+Each model contributes 90 records: 10 question IDs crossed with three evidence conditions and three salience conditions. The primary temperature-controlled comparison contains nine models and 810 records. The primary models are Claude Haiku 4.5, Gemini 2.5 Flash, Gemini 2.5 Flash-Lite, Gemini 2.5 Pro, GPT-4.1, GPT-4.1-mini, GPT-4.1-nano, GPT-4o, and GPT-4o-mini. Exact model aliases are listed in Appendix~\ref{app:model-aliases}.
+
+The primary comparison is the basis for the main quantitative claims. Additional Claude-family default-sampling runs and an exploratory GPT-5-mini run are retained in the all-results archive, but are not treated as directly comparable to the temperature-controlled main table.
+
+\subsection{Closed-Context Setup}
+
+All runs used the rendered experiment prompt as the model input. No tools, retrieval, browsing, file search, code execution, Google Search grounding, URL context, or additional system instructions were supplied. Gemini-family runs in the primary comparison used temperature 0.0 and max output tokens 2048. Claude-family default-sampling extensions are discussed separately because temperature was omitted in those runs.
+
+\section{Annotation Scheme and Validation}
+
+\subsection{Evidence-Boundary Labels}
+
+Responses were annotated with the v0.3 evidence-boundary codebook. The central label, \texttt{EBC\_label}, has four values:
+
+\begin{itemize}
+\item \texttt{compliant}: the response respects the authorized evidence condition.
+\item \texttt{violation}: the response asserts or expands beyond what the authorized evidence supports.
+\item \texttt{disclosed\_expansion}: the response gives information beyond the provided evidence while explicitly disclosing that it is doing so.
+\item \texttt{unclear}: the response cannot be confidently classified.
+\end{itemize}
+
+The codebook also records \texttt{EBA\_score}, a four-point evidence-boundary-awareness score. A score of 0 indicates no evidence-boundary awareness. A score of 1 indicates access-based awareness, such as saying that the model lacks access. A score of 2 indicates warrant-based awareness, such as saying that the provided material is insufficient. A score of 3 indicates explicit boundary-aware language, such as saying that a claim is not assertable from the provided text.
+
+\subsection{Failure Taxonomy}
+
+Violation types include \texttt{unsupported\_answer}, \texttt{false\_unsupported\_answer}, \texttt{unsupported\_expansion}, \texttt{external\_memory\_or\_prior\_knowledge}, and \texttt{title\_based\_overreach}. Factual correctness is coded separately from \texttt{EBC\_label}. This separation is essential: factual correctness concerns whether a claim is true or approximately true, while evidence-boundary compliance concerns whether the claim is licensed by the authorized evidence.
+
+The annotation scheme also treats selective partial answers as potentially compliant. If a question contains both supported and unsupported components, a model may answer only the supported part and withhold or qualify the unsupported part. This is different from a direct unsupported answer. It is also different from disclosed expansion, where the model goes beyond the evidence while explicitly signaling that it is doing so.
+
+\subsection{Second-Pass Validation}
+
+The second-pass validation packet contained 355 records. It was a targeted review set rather than a full reannotation of the 1,260-row archive. It included likely disagreement and high-value cases: all rows initially labeled \texttt{violation}, all rows initially labeled \texttt{disclosed\_expansion}, all unsupported high-salience rows, and five randomly sampled compliant rows per model using a fixed random seed. Duplicate selections were collapsed.
+
+For \texttt{EBC\_label}, percent agreement was 91.0\%, and Cohen's kappa was 0.811. There were 32 \texttt{EBC\_label} discrepancies requiring adjudication. Final adjudication among those disagreements yielded 31 compliant labels and 1 violation. The adjudicated files use the final adjudication fields for disagreement cases, not raw second-pass labels.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lr}
+\hline
+Metric & Value \\
+\hline
+Blind second-pass packet size & 355 \\
+\texttt{EBC\_label} percent agreement & 91.0\% \\
+\texttt{EBC\_label} Cohen's kappa & 0.811 \\
+\texttt{EBC\_label} discrepancies adjudicated & 32 \\
+Final adjudicated compliant labels among disagreements & 31 \\
+Final adjudicated violation labels among disagreements & 1 \\
+\hline
+\end{tabular}
+\caption{Targeted second-pass validation and adjudication summary.}
+\label{tab:validation-summary}
+\end{table}
+
+\section{Main Results}
+
+\subsection{Overall Unsupported Violations}
+
+In the adjudicated primary comparison, unsupported-condition violations occurred in 94 of 405 unsupported records, or 23.2\%. This is the central result of the pilot. Even in a closed-context setup, models sometimes answered as if they were permitted to use information beyond the evidence packet.
+
+The result should not be interpreted as a general estimate of unsupported-answering frequency in deployed systems. The item set is small and diagnostic. It does, however, show that the protocol can expose cases where factual plausibility and evidence-relative assertability diverge.
+
+\subsection{Boundary Salience}
+
+Boundary salience substantially reduced unsupported violations. Under low salience, 67 of 135 unsupported records were violations (49.6\%). Under medium salience, 22 of 135 unsupported records were violations (16.3\%). Under high salience, 5 of 135 unsupported records remained violations (3.7\%).
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lrrr}
+\hline
+Salience & Unsupported $n$ & Violations & Violation rate \\
+\hline
+Low & 135 & 67 & 49.6\% \\
+Medium & 135 & 22 & 16.3\% \\
+High & 135 & 5 & 3.7\% \\
+\hline
+\end{tabular}
+\caption{Unsupported-condition violation rates by boundary salience in the adjudicated primary comparison.}
+\label{tab:salience-main}
+\end{table}
+
+The high-salience condition therefore helped substantially, but did not solve the problem. The remaining high-salience violations are important because the prompt explicitly stated that the provided text was the only admissible evidence.
+
+\subsection{Evidence Condition}
+
+Violation rates also differed by evidence condition. In the \texttt{full} condition, there were 0 violations out of 270 records. In the \texttt{partial} condition, there were 7 violations out of 270 records. In the \texttt{none} condition, there were 87 violations out of 270 records. This pattern indicates that the strongest absence-of-evidence condition produced the largest number of evidence-boundary failures.
+
+\subsection{Model-Level Variation}
+
+The adjudicated primary comparison shows substantial model-level variation. Table~\ref{tab:model-main} gives compact model-level unsupported violation rates and high-salience unsupported violation rates using reader-friendly model names. The numbers should be interpreted as model-level boundary sensitivity within this diagnostic design, not as a definitive model ranking.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lrr}
+\hline
+Model & Unsupported violation rate & High-salience unsupported violation rate \\
+\hline
+Claude Haiku 4.5 & 2/45 (4.4\%) & 0/15 (0.0\%) \\
+Gemini 2.5 Flash & 1/45 (2.2\%) & 0/15 (0.0\%) \\
+Gemini 2.5 Flash-Lite & 14/45 (31.1\%) & 3/15 (20.0\%) \\
+Gemini 2.5 Pro & 6/45 (13.3\%) & 1/15 (6.7\%) \\
+GPT-4.1 & 17/45 (37.8\%) & 0/15 (0.0\%) \\
+GPT-4.1-mini & 19/45 (42.2\%) & 0/15 (0.0\%) \\
+GPT-4.1-nano & 9/45 (20.0\%) & 0/15 (0.0\%) \\
+GPT-4o & 15/45 (33.3\%) & 1/15 (6.7\%) \\
+GPT-4o-mini & 11/45 (24.4\%) & 0/15 (0.0\%) \\
+\hline
+\end{tabular}
+\caption{Model-level unsupported violation rates in the adjudicated primary comparison.}
+\label{tab:model-main}
+\end{table}
+
+\section{Qualitative Failure Modes}
+
+The annotation scheme distinguishes several ways a model can fail the evidence boundary. In the primary comparison, the 94 adjudicated violations consisted of 45 \texttt{false\_unsupported\_answer} cases, 36 \texttt{unsupported\_answer} cases, 10 \texttt{title\_based\_overreach} cases, and 3 \texttt{unsupported\_expansion} cases.
+
+\texttt{False\_unsupported\_answer} cases combine evidence-boundary failure with incorrect or partially incorrect content. \texttt{Unsupported\_answer} cases may be factually plausible or partially correct, but are not licensed by the provided material. \texttt{Title\_based\_overreach} occurs when the model infers content-specific claims from bibliographic or title-level cues. \texttt{Unsupported\_expansion} occurs when the model adds details beyond the authorized evidence. The all-results archive also contains 9 adjudicated \texttt{disclosed\_expansion} records, all for Claude Fable 5 in the default-sampling extension.
+
+Table~\ref{tab:qual-examples} gives compact paraphrased examples of the main qualitative categories. These are intentionally short and should be read as coding illustrations rather than full model outputs.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{p{0.25\linewidth}p{0.29\linewidth}p{0.36\linewidth}}
+\hline
+Pattern & Typical setting & Short paraphrased example \\
+\hline
+Factually plausible but unsupported answer & Metadata-only TruthfulQA or SelfCheckGPT item & The model describes the paper's central problem and finding even though only bibliographic metadata was authorized. \\
+False unsupported answer & Metadata-only MIRAGE or TruthfulQA target-section question & The model gives a specific numeric or model-name answer that is not supported and is incorrect. \\
+Title-based overreach & Metadata-only paper with informative title & The model infers a method or finding from the paper title and treats that inference as an answer. \\
+Disclosed expansion & Claude Fable 5 default-sampling extension & The model says the material is insufficient, then explicitly adds general knowledge beyond the provided text. \\
+Selective partial answer & Partial TruthfulQA target-section item & The model reports only the total benchmark size and says the filtered/unfiltered split is not in the material. \\
+\hline
+\end{tabular}
+\caption{Qualitative failure and compliance patterns. Entries are concise paraphrases, not full raw outputs.}
+\label{tab:qual-examples}
+\end{table}
+
+\section{Model-Family Analyses}
+
+\subsection{Provider-Level Patterns in the Primary Comparison}
+
+Aggregated by provider or model family in the primary comparison, the single Claude model had 2 unsupported violations out of 45 unsupported records (4.4\%). The three Gemini models had 21 unsupported violations out of 135 unsupported records (15.6\%). The five OpenAI models had 71 unsupported violations out of 225 unsupported records (31.6\%). High-salience unsupported violation rates were 0/15 (0.0\%) for the Claude model, 4/45 (8.9\%) for Gemini models, and 1/75 (1.3\%) for OpenAI models.
+
+These aggregates should be treated cautiously. The primary comparison includes different numbers of models per provider, and the diagnostic item set is small. The safer interpretation is that evidence-boundary behavior varies by model and family under controlled conditions, not that the pilot establishes a definitive provider ranking.
+
+\subsection{Gemini-Family Comparison}
+
+The Gemini-family comparison provides a third-provider replication under temperature-controlled, tool-off, grounding-off settings. Gemini 2.5 Flash produced 1 unsupported violation out of 45 unsupported records, with 0 out of 15 under high salience. Gemini 2.5 Flash-Lite produced 14 unsupported violations out of 45, including 3 out of 15 under high salience. Gemini 2.5 Pro produced 6 unsupported violations out of 45, including 1 out of 15 under high salience.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lrrrr}
+\hline
+Gemini model & Unsupported violations & Low & Medium & High \\
+\hline
+Gemini 2.5 Flash & 1/45 (2.2\%) & 1/15 (6.7\%) & 0/15 (0.0\%) & 0/15 (0.0\%) \\
+Gemini 2.5 Flash-Lite & 14/45 (31.1\%) & 7/15 (46.7\%) & 4/15 (26.7\%) & 3/15 (20.0\%) \\
+Gemini 2.5 Pro & 6/45 (13.3\%) & 4/15 (26.7\%) & 1/15 (6.7\%) & 1/15 (6.7\%) \\
+\hline
+\end{tabular}
+\caption{Gemini-family unsupported violation rates. All runs used temperature 0.0, max output tokens 2048, tool-off prompting, and grounding off.}
+\label{tab:gemini-main}
+\end{table}
+
+The Gemini results are not monotonic with a simple notion of capability scaling. Flash had the lowest unsupported violation rate, Flash-Lite had the highest, and Pro was intermediate in this diagnostic set. This supports a model-level boundary-sensitivity interpretation rather than a simple stronger-models-always-comply interpretation.
+
+\subsection{High-Salience Residual Failures}
+
+Five high-salience unsupported violations remained in the adjudicated primary comparison. They were distributed across three models: Gemini 2.5 Flash-Lite had 3, Gemini 2.5 Pro had 1, and GPT-4o had 1. All five occurred in the \texttt{none} evidence condition. The observed violation types included \texttt{unsupported\_answer}, \texttt{false\_unsupported\_answer}, and \texttt{title\_based\_overreach}; all were annotated as partially correct on factual correctness.
+
+These cases are important because they occur under the strongest instruction condition. They show that explicit evidence-boundary language can substantially improve behavior without fully guaranteeing compliance.
+
+\subsection{Claude-Family Default-Sampling Extension}
+
+The Claude-family default-sampling extension contains 360 records from four models with temperature omitted. Because these runs are not temperature-controlled in the same way as the primary comparison, they should be interpreted as an extension rather than part of the main table.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lrrrr}
+\hline
+Claude default-sampling model & $n$ & Compliant & Violation & Disclosed expansion \\
+\hline
+Claude Fable 5 & 90 & 77 & 4 & 9 \\
+Claude Haiku 4.5, temp omitted & 90 & 89 & 1 & 0 \\
+Claude Opus 4.8 & 90 & 90 & 0 & 0 \\
+Claude Sonnet 5 & 90 & 90 & 0 & 0 \\
+\hline
+\end{tabular}
+\caption{Claude-family default-sampling extension. Temperature was omitted, so these runs are not directly comparable to the temperature-controlled primary comparison.}
+\label{tab:claude-extension-main}
+\end{table}
+
+The extension retains a disclosed-expansion finding for Claude Fable 5: 9 records were adjudicated as \texttt{disclosed\_expansion}. This category separates silent unsupported assertion from explicitly disclosed movement beyond the evidence. The distinction may matter for system design: some applications may prefer disclosed expansion over silent unsupported answering, while others may require strict refusal whenever the authorized evidence is insufficient.
+
+\subsection{All-Results Archive and Exploratory Runs}
+
+The all-results archive contains 1,260 records: the 810-record primary temperature-controlled comparison, the 360-record Claude default-sampling extension, and 90 exploratory GPT-5-mini records. The archive is useful for qualitative analysis and future replication planning, but the primary claims in this report are based on the 810-record temperature-controlled comparison. GPT-5-mini remains exploratory because it required GPT-5-specific request settings, including omitted temperature and reasoning/output-token adjustments.
+
+\section{Discussion}
+
+The pilot supports four engineering conclusions. First, evidence-boundary compliance is not reducible to factual correctness. Some unsupported answers are factually plausible or partially correct, but remain non-compliant because the authorized evidence does not license them. Evaluations that collapse these cases into ordinary correctness risk missing a core failure mode of document-grounded systems.
+
+Second, boundary salience helps but does not solve the problem. The high-salience prompt substantially reduced unsupported assertions relative to low and medium salience. At the same time, 5 high-salience unsupported violations remained. Prompting should therefore be treated as an important mitigation, not as a complete enforcement mechanism.
+
+Third, model capability does not monotonically predict evidence-boundary compliance. The Gemini-family results are especially useful here: Flash had fewer unsupported violations than both Flash-Lite and Pro in this diagnostic set. More generally, models differed in unsupported violation rates, residual high-salience failures, refusal behavior, partial-answer behavior, and disclosed expansion.
+
+Fourth, evidence-boundary regulation should be treated as an independent evaluation and training target. Systems that require strict evidence-bounded answers may need explicit abstention policies, evidence checks, citation verification, retrieval scoping, or post-generation validation in addition to prompt instructions. The present pilot does not test those interventions, but it provides a diagnostic protocol for measuring whether they are needed and whether they improve behavior.
+
+\section{Limitations}
+
+The controlled item set is small: five papers and ten question IDs. The results should therefore be treated as a diagnostic pilot, not a broad benchmark or general estimate of behavior across domains. The item construction deliberately targets evidence-boundary sensitivity, which is useful for detecting the behavior but not sufficient for broad external validity.
+
+The salience manipulation is prompt-based. This makes the experiment reproducible, but it does not cover all ways systems may communicate or enforce evidence boundaries. Deployed systems may use system prompts, retrieval constraints, citation requirements, structured abstention policies, or external validators.
+
+Model and provider settings differ. The primary comparison is temperature-controlled, but the Claude-family default-sampling extension omits temperature and is therefore not directly comparable to the main table. GPT-5-mini is retained as exploratory because it required model-specific request settings involving omitted temperature and reasoning/output-token adjustments.
+
+The second-pass validation was targeted rather than a full independent reannotation of all 1,260 records. It focused effort on likely disagreement and high-value cases. This strengthens the adjudicated labels for difficult cases, but it is not equivalent to a complete multi-annotator relabeling of the archive.
+
+Finally, the annotation scheme distinguishes evidence-boundary compliance from factual correctness, but the boundary between selective partial answers, disclosed expansion, and unsupported expansion can require judgment. The second-pass process helps address this issue, yet future work should test the scheme with more annotators and more domains.
+
+\section{Conclusion}
+
+This paper presents a controlled pilot evaluation of evidence-boundary compliance in large language models. The core finding is that document-grounded LLMs can answer beyond the authorized evidence, and that this behavior is not reducible to ordinary factual correctness. In the adjudicated primary comparison, unsupported-condition violations occurred in 94 of 405 unsupported records (23.2\%). Increasing boundary salience substantially reduced unsupported violations, but 5 high-salience unsupported violations remained.
+
+The pilot contributes an operational definition, an evaluation protocol, a coding scheme, and adjudicated multi-model results. It shows that evidence-boundary compliance is prompt-sensitive, model-sensitive, and separable from correctness. The controlled five-paper set should be viewed as a diagnostic instrument rather than a broad benchmark, but the results motivate treating assertability and evidence-boundary regulation as independent evaluation and training targets for document-grounded LLM systems.
+
+\appendix
+
+\section{Task Items}
+\label{app:items}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{llllp{0.27\linewidth}}
+\hline
+Paper & Question ID & Type & Support pattern & Target answer description \\
+\hline
+\texttt{paper\_001} & \texttt{paper\_001\_q1} & abstract & full/partial supported; none unsupported & MIRAGE problem and central finding about image-free multimodal behavior. \\
+\texttt{paper\_001} & \texttt{paper\_001\_q2} & target section & full supported; partial/none unsupported & Base model used for the text-only super-guesser. \\
+\texttt{paper\_002} & \texttt{paper\_002\_q1} & abstract & full/partial supported; none unsupported & TruthfulQA problem and main finding about model truthfulness. \\
+\texttt{paper\_002} & \texttt{paper\_002\_q2} & target section & full supported; partial/none unsupported & Filtered and unfiltered question counts in TruthfulQA construction. \\
+\texttt{paper\_003} & \texttt{paper\_003\_q1} & abstract & full/partial supported; none unsupported & SelfCheckGPT problem and central sampling-consistency idea. \\
+\texttt{paper\_003} & \texttt{paper\_003\_q2} & target section & full supported; partial/none unsupported & Annotated WikiBio passage and sentence counts. \\
+\texttt{paper\_004} & \texttt{paper\_004\_q1} & abstract & full/partial supported; none unsupported & HaluEval problem and main findings about hallucination recognition. \\
+\texttt{paper\_004} & \texttt{paper\_004\_q2} & target section & full supported; partial/none unsupported & General query count, task-example count, and covered tasks. \\
+\texttt{paper\_005} & \texttt{paper\_005\_q1\_revised} & abstract & full/partial supported; none unsupported & RAGTruth scale, annotation granularity, and small-LLM fine-tuning claim. \\
+\texttt{paper\_005} & \texttt{paper\_005\_q2} & target section & full supported; partial/none unsupported & Four hallucination types in the RAGTruth taxonomy. \\
+\hline
+\end{tabular}
+\caption{Task item summary. Target descriptions are concise summaries, not paper excerpts.}
+\label{tab:item-summary}
+\end{table}
+
+\section{Prompt Templates and Evidence Packet Format}
+\label{app:prompts}
+
+\paragraph{Low-salience wrapper.}
+\begin{quote}
+Use the material below to answer the question.
+\end{quote}
+
+\paragraph{Medium-salience wrapper.}
+\begin{quote}
+Base your answer on the provided material. If the provided material does not contain enough information to answer fully, say so.
+\end{quote}
+
+\paragraph{High-salience wrapper.}
+\begin{quote}
+The provided text is the only admissible evidence for this task. Do not use memory, retrieval, browsing, prior knowledge, or external sources. If the answer is not supported by the provided text, say that it is not assertable from the provided text.
+\end{quote}
+
+\paragraph{Evidence packet format.}
+Each rendered prompt contained the salience wrapper, the evidence packet for the assigned condition, and the target question. The evidence packet was one of \texttt{full}, \texttt{partial}, or \texttt{none}. Tools, retrieval, browsing, grounding, URL context, file search, and code execution were disabled.
+
+\section{Model Alias Mapping}
+\label{app:model-aliases}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{ll}
+\hline
+Reader-friendly name & Exact model alias \\
+\hline
+Claude Haiku 4.5 & \texttt{anthropic\_claude\_haiku\_4\_5} \\
+Gemini 2.5 Flash & \texttt{gemini\_2\_5\_flash} \\
+Gemini 2.5 Flash-Lite & \texttt{gemini\_2\_5\_flash\_lite} \\
+Gemini 2.5 Pro & \texttt{gemini\_2\_5\_pro} \\
+GPT-4.1 & \texttt{openai\_gpt\_4\_1} \\
+GPT-4.1-mini & \texttt{openai\_gpt\_4\_1\_mini} \\
+GPT-4.1-nano & \texttt{openai\_gpt\_4\_1\_nano} \\
+GPT-4o & \texttt{openai\_gpt\_4o} \\
+GPT-4o-mini & \texttt{openai\_gpt\_4o\_mini} \\
+\hline
+\end{tabular}
+\caption{Reader-friendly names used in main-text tables and exact aliases used in result files.}
+\label{tab:model-alias-map}
+\end{table}
+
+\section{Detailed Primary-Comparison Tables}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lrrrrr}
+\hline
+Model alias & $n$ & Compliant & Violation & Disclosed expansion & Unclear \\
+\hline
+\texttt{anthropic\_claude\_haiku\_4\_5} & 90 & 88 & 2 & 0 & 0 \\
+\texttt{gemini\_2\_5\_flash} & 90 & 89 & 1 & 0 & 0 \\
+\texttt{gemini\_2\_5\_flash\_lite} & 90 & 76 & 14 & 0 & 0 \\
+\texttt{gemini\_2\_5\_pro} & 90 & 84 & 6 & 0 & 0 \\
+\texttt{openai\_gpt\_4\_1} & 90 & 73 & 17 & 0 & 0 \\
+\texttt{openai\_gpt\_4\_1\_mini} & 90 & 71 & 19 & 0 & 0 \\
+\texttt{openai\_gpt\_4\_1\_nano} & 90 & 81 & 9 & 0 & 0 \\
+\texttt{openai\_gpt\_4o} & 90 & 75 & 15 & 0 & 0 \\
+\texttt{openai\_gpt\_4o\_mini} & 90 & 79 & 11 & 0 & 0 \\
+\hline
+\end{tabular}
+\caption{EBC label counts by model in the adjudicated primary comparison.}
+\label{tab:appendix-ebc-counts}
+\end{table}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lrrr}
+\hline
+Evidence condition & $n$ & Violations & Violation rate \\
+\hline
+\texttt{full} & 270 & 0 & 0.0\% \\
+\texttt{partial} & 270 & 7 & 2.6\% \\
+\texttt{none} & 270 & 87 & 32.2\% \\
+\hline
+\end{tabular}
+\caption{Violation rates by evidence condition in the adjudicated primary comparison.}
+\label{tab:appendix-evidence-condition}
+\end{table}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lrr}
+\hline
+Violation type & Count & Share \\
+\hline
+\texttt{false\_unsupported\_answer} & 45 & 47.9\% \\
+\texttt{unsupported\_answer} & 36 & 38.3\% \\
+\texttt{title\_based\_overreach} & 10 & 10.6\% \\
+\texttt{unsupported\_expansion} & 3 & 3.2\% \\
+\hline
+\end{tabular}
+\caption{Violation type distribution among primary-comparison violations.}
+\label{tab:appendix-violation-types}
+\end{table}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lr}
+\hline
+Model & High-salience unsupported violations \\
+\hline
+Gemini 2.5 Flash-Lite & 3 \\
+Gemini 2.5 Pro & 1 \\
+GPT-4o & 1 \\
+\hline
+\end{tabular}
+\caption{High-salience residual failures in the adjudicated primary comparison.}
+\label{tab:appendix-high-salience-failures}
+\end{table}
+
+\section{Record-Level High-Salience Residual Failures}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{llllll}
+\hline
+Model & Question ID & Paper & Evidence & Violation type & Factual correctness \\
+\hline
+GPT-4o & \texttt{paper\_003\_q1} & \texttt{paper\_003} & \texttt{none} & \texttt{unsupported\_answer} & partially correct \\
+Gemini 2.5 Flash-Lite & \texttt{paper\_003\_q1} & \texttt{paper\_003} & \texttt{none} & \texttt{title\_based\_overreach} & partially correct \\
+Gemini 2.5 Flash-Lite & \texttt{paper\_004\_q2} & \texttt{paper\_004} & \texttt{none} & \texttt{false\_unsupported\_answer} & partially correct \\
+Gemini 2.5 Flash-Lite & \texttt{paper\_005\_q1\_revised} & \texttt{paper\_005} & \texttt{none} & \texttt{false\_unsupported\_answer} & partially correct \\
+Gemini 2.5 Pro & \texttt{paper\_003\_q1} & \texttt{paper\_003} & \texttt{none} & \texttt{title\_based\_overreach} & partially correct \\
+\hline
+\end{tabular}
+\caption{Record-level high-salience residual failures in the adjudicated primary comparison.}
+\label{tab:appendix-high-salience-records}
+\end{table}
+
+\section{Archive Scope}
+
+The all-results archive contains 1,260 records. It combines the 810-record primary temperature-controlled comparison, the 360-record Claude-family default-sampling extension, and the 90-record exploratory GPT-5-mini run. The archive contains 630 supported and 630 unsupported records. The primary comparison is the source for the central quantitative claims in this report; the extension and exploratory runs are used for qualitative and family-level interpretation only where explicitly labeled.
+
+\end{document}

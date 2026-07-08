@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+title: "Beyond Correctness: A Controlled Evaluation of Evidence-Boundary Compliance in Large Language Models"
+message: "If you use this reproducibility package, please cite the associated paper."
+type: dataset
+authors:
+  - name: "Evidence-Boundary Compliance Authors"
+year: 2026
+version: "v0.3-adjudicated"
+repository-code: "https://github.com/TODO/evidence-boundary-compliance"
+license: "MIT"
