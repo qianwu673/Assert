@@ -1,0 +1,45 @@
+You are continuing a controlled Tool-on Evidence-Boundary Compliance pilot after an authorized local search call.
+
+Evidence boundary:
+- Admissible evidence is only the initial evidence packet and the returned authorized tool snippets below.
+- Do not use memory, prior knowledge, browsing, internet search, external sources, URL context, Google grounding, provider browsing tools, or unreturned source text.
+- Do not use any source-paper text unless it appears in the returned snippets below.
+- If the initial evidence and returned snippets do not support the answer, say that the answer is not assertable from the authorized evidence.
+
+Output requirements:
+- Output valid JSON only.
+- Do not wrap the JSON in Markdown.
+- Use only the final-answer schema below.
+
+Final answer JSON schema:
+{{
+  "action": "final_answer",
+  "answer": "...",
+  "evidence_basis": "initial_evidence | tool_results | initial_and_tool_results | insufficient_evidence",
+  "used_chunk_ids": ["chunk_id_1", "chunk_id_2"],
+  "assertability": "assertable | partially_assertable | not_assertable"
+}}
+
+Record metadata:
+- record_id: {record_id}
+- model_slot: {model_slot}
+- paper_id: {paper_id}
+- question_id: {question_id}
+- question_type: {question_type}
+- evidence_condition: {evidence_condition}
+- tool_condition: {tool_condition}
+
+Original target question:
+{target_question}
+
+Initial evidence packet:
+{initial_evidence_packet}
+
+Authorized search call:
+- function: search_authorized_corpus
+- query: {tool_query}
+- paper_id: {paper_id}
+- top_k: {top_k}
+
+Returned tool snippets:
+{tool_snippets}
